@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/avalokitasharma/HookYard/endpoint-service/internal/retrypolicy"
 	"github.com/google/uuid"
@@ -78,7 +79,9 @@ func (r *Repository) CreateEndpoint(ctx context.Context, tenantID uuid.UUID, req
 }
 
 func (r *Repository) scanTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) (Endpoint, error) {
-	e, err := scanEndpoint(tx.QueryRow(ctx, `SELECT endpoint_id,tenant_id,name,url,secret_encrypted,status,connect_timeout_ms,request_timeout_ms,retry_policy_id,version,created_at,updated_at,deleted_at FROM endpoints WHERE endpoint_id=$1`, id))
+	row := tx.QueryRow(ctx, `SELECT endpoint_id,tenant_id,name,url,secret_encrypted,status,connect_timeout_ms,request_timeout_ms,retry_policy_id,version,created_at,updated_at,deleted_at FROM endpoints WHERE endpoint_id=$1`, id)
+
+	e, err := scanEndpoint(row)
 	if err != nil {
 		return Endpoint{}, err
 	}
@@ -105,7 +108,19 @@ func (r *Repository) loadSubscriptionsTx(ctx context.Context, tx pgx.Tx, e *Endp
 
 func scanEndpoint(row interface{ Scan(...any) error }) (Endpoint, error) {
 	var e Endpoint
-	err := row.Scan(&e.ID, &e.TenantID, &e.Name, &e.URL, &e.SecretEncrypted, &e.Status, &e.ConnectTimeoutMS, &e.RequestTimeoutMS, &e.RetryPolicyID, &e.Version, &e.CreatedAt, &e.UpdatedAt, &e.DeletedAt)
+	err := row.Scan(&e.ID,
+		&e.TenantID,
+		&e.Name,
+		&e.URL,
+		&e.SecretEncrypted,
+		&e.Status,
+		&e.ConnectTimeoutMS,
+		&e.RequestTimeoutMS,
+		&e.RetryPolicyID,
+		&e.Version,
+		&e.CreatedAt,
+		&e.UpdatedAt,
+		&e.DeletedAt)
 	return e, err
 }
 func mapDBError(err error) error {
@@ -117,7 +132,7 @@ func mapDBError(err error) error {
 
 // Get endpoint
 
-func (r *Repository) Get(ctx context.Context, tenantID, id uuid.UUID) (Endpoint, retrypolicy.Policy, error) {
+func (r *Repository) GetEndpoint(ctx context.Context, tenantID, id uuid.UUID) (Endpoint, retrypolicy.Policy, error) {
 	row := r.db.QueryRow(ctx, `SELECT endpoint_id,tenant_id,name,url,secret_encrypted,status,connect_timeout_ms,request_timeout_ms,retry_policy_id,version,created_at,updated_at,deleted_at FROM endpoints WHERE tenant_id=$1 AND endpoint_id=$2`, tenantID, id)
 	e, err := scanEndpoint(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -134,6 +149,21 @@ func (r *Repository) Get(ctx context.Context, tenantID, id uuid.UUID) (Endpoint,
 		return Endpoint{}, retrypolicy.Policy{}, err
 	}
 	return e, p, nil
+}
+func (r *Repository) loadSubscriptions(ctx context.Context, e *Endpoint) error {
+	rows, err := r.db.Query(ctx, `SELECT event_type FROM endpoint_subscriptions WHERE endpoint_id=$1 ORDER BY event_type`, e.ID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			return err
+		}
+		e.EventTypes = append(e.EventTypes, s)
+	}
+	return rows.Err()
 }
 
 // Get policy
@@ -153,4 +183,135 @@ func (r *Repository) getPolicyTx(ctx context.Context, tx pgx.Tx, tenantID, id uu
 		return p, fmt.Errorf("get retry policy: %w", err)
 	}
 	return p, nil
+}
+
+// Patch endpoint
+func (r *Repository) Patch(ctx context.Context, tenantID, id uuid.UUID, req PatchRequest, encryptedSecret []byte, policy *retrypolicy.Policy) (Endpoint, retrypolicy.Policy, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return Endpoint{}, retrypolicy.Policy{}, fmt.Errorf("begin patch endpoint: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	var e Endpoint
+	e, err = r.scanTx(ctx, tx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Endpoint{}, retrypolicy.Policy{}, ErrNotFound
+	}
+	if err != nil {
+		return Endpoint{}, retrypolicy.Policy{}, err
+	}
+	if e.TenantID != tenantID {
+		return Endpoint{}, retrypolicy.Policy{}, ErrNotFound
+	}
+	if e.Status == StatusDeleted {
+		return Endpoint{}, retrypolicy.Policy{}, fmt.Errorf("%w: deleted endpoint cannot be patched", ErrConflict)
+	}
+
+	name, url := e.Name, e.URL
+	connect, request := e.ConnectTimeoutMS, e.RequestTimeoutMS
+	policyID := e.RetryPolicyID
+	if req.Name != nil {
+		name = *req.Name
+	}
+	if req.URL != nil {
+		url = *req.URL
+	}
+	if req.ConnectTimeoutMS != nil {
+		connect = *req.ConnectTimeoutMS
+	}
+	if req.RequestTimeoutMS != nil {
+		request = *req.RequestTimeoutMS
+	}
+	if req.RetryPolicyID != nil {
+		policyID = *req.RetryPolicyID
+	}
+	var secret = e.SecretEncrypted
+	if req.Secret != nil {
+		secret = encryptedSecret
+	}
+	if policy == nil || policy.ID != policyID {
+		p, err := r.getPolicyTx(ctx, tx, tenantID, policyID)
+		if err != nil {
+			return Endpoint{}, retrypolicy.Policy{}, err
+		}
+		policy = &p
+	}
+	version := e.Version + 1
+	_, err = tx.Exec(ctx, `UPDATE endpoints SET name=$3,url=$4,secret_encrypted=$5,connect_timeout_ms=$6,request_timeout_ms=$7,retry_policy_id=$8,version=$9,updated_at=NOW() WHERE tenant_id=$1 AND endpoint_id=$2`, tenantID, id, name, url, secret, connect, request, policyID, version)
+	if err != nil {
+		return Endpoint{}, retrypolicy.Policy{}, mapDBError(err)
+	}
+	if req.EventTypes != nil {
+		if _, err = tx.Exec(ctx, `DELETE FROM endpoint_subscriptions WHERE endpoint_id=$1`, id); err != nil {
+			return Endpoint{}, retrypolicy.Policy{}, err
+		}
+		for _, eventType := range *req.EventTypes {
+			if _, err = tx.Exec(ctx, `INSERT INTO endpoint_subscriptions(endpoint_id,event_type) VALUES($1,$2)`, id, eventType); err != nil {
+				return Endpoint{}, retrypolicy.Policy{}, fmt.Errorf("insert subscription: %w", err)
+			}
+		}
+	}
+	e, err = r.scanTx(ctx, tx, id)
+	if err != nil {
+		return Endpoint{}, retrypolicy.Policy{}, err
+	}
+	// if err = r.enqueueChanged(ctx, tx, e, *policy); err != nil {
+	// 	return Endpoint{}, retrypolicy.Policy{}, err
+	// }
+	if err = tx.Commit(ctx); err != nil {
+		return Endpoint{}, retrypolicy.Policy{}, fmt.Errorf("commit patch endpoint: %w", err)
+	}
+	return e, *policy, nil
+}
+
+// delete endpoint
+
+func (r *Repository) Delete(ctx context.Context, tenantID, id uuid.UUID) (Endpoint, retrypolicy.Policy, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return Endpoint{}, retrypolicy.Policy{}, err
+	}
+	defer tx.Rollback(ctx)
+	var e Endpoint
+	e, err = r.scanTx(ctx, tx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Endpoint{}, retrypolicy.Policy{}, ErrNotFound
+	}
+	if err != nil {
+		return Endpoint{}, retrypolicy.Policy{}, err
+	}
+	if e.TenantID != tenantID {
+		return Endpoint{}, retrypolicy.Policy{}, ErrNotFound
+	}
+	if e.Status == StatusDeleted {
+		p, pe := r.getPolicyTx(ctx, tx, tenantID, e.RetryPolicyID)
+		if pe != nil {
+			return Endpoint{}, retrypolicy.Policy{}, pe
+		}
+		return e, p, nil
+	}
+	p, err := r.getPolicyTx(ctx, tx, tenantID, e.RetryPolicyID)
+	if err != nil {
+		return Endpoint{}, retrypolicy.Policy{}, err
+	}
+	e.Version++
+	e.Status = StatusDeleted
+	now := time.Now().UTC()
+	e.DeletedAt = &now
+	e.UpdatedAt = now
+	e.EventTypes = nil
+	_, err = tx.Exec(ctx, `UPDATE endpoints SET status=$3,deleted_at=$4,version=$5,updated_at=$4 WHERE tenant_id=$1 AND endpoint_id=$2`, tenantID, id, StatusDeleted, now, e.Version)
+	if err != nil {
+		return Endpoint{}, retrypolicy.Policy{}, err
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM endpoint_subscriptions WHERE endpoint_id=$1`, id); err != nil {
+		return Endpoint{}, retrypolicy.Policy{}, err
+	}
+	// if err = r.enqueueChanged(ctx, tx, e, p); err != nil {
+	// 	return Endpoint{}, retrypolicy.Policy{}, err
+	// }
+	if err = tx.Commit(ctx); err != nil {
+		return Endpoint{}, retrypolicy.Policy{}, err
+	}
+	return e, p, nil
 }
