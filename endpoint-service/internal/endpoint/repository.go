@@ -315,3 +315,25 @@ func (r *Repository) Delete(ctx context.Context, tenantID, id uuid.UUID) (Endpoi
 	}
 	return e, p, nil
 }
+
+func (r *Repository) GetSubscriptions(ctx context.Context, tenantID uuid.UUID, eventType string) ([]Endpoint, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT e.endpoint_id,e.tenant_id,e.name,e.url,e.secret_encrypted,e.status,e.connect_timeout_ms,e.request_timeout_ms,e.retry_policy_id,e.version,e.created_at,e.updated_at,e.deleted_at 
+		FROM endpoint_subscriptions s 
+		JOIN endpoints e ON e.endpoint_id=s.endpoint_id 
+		WHERE e.tenant_id=$1 AND s.event_type=$2 AND e.status=$3 AND e.deleted_at IS NULL ORDER BY e.endpoint_id`,
+		tenantID, eventType, StatusActive)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Endpoint
+	for rows.Next() {
+		e, err := scanEndpoint(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}

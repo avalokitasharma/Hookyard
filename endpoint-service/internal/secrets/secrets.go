@@ -9,7 +9,9 @@ import (
 	"io"
 )
 
-type Cipher struct{ gcm cipher.AEAD }
+type Cipher struct {
+	gcm cipher.AEAD
+}
 
 func NewFromHex(keyHex string) (*Cipher, error) {
 	key, err := hex.DecodeString(keyHex)
