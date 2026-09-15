@@ -48,7 +48,7 @@ func (r *Relay) Run(ctx context.Context) {
 }
 
 func (r *Relay) flush(ctx context.Context) {
-	// get locks on pending event in outbox table
+	// get locks on pending events in outbox table
 	msgs, err := r.repo.Claim(ctx, r.workerID, r.batchSize, r.lease)
 	if err != nil {
 		r.logger.Error("claim outbox", "err", err)

@@ -33,6 +33,8 @@ func Enqueue(ctx context.Context, tx pgx.Tx, topic, key string, payload any) (uu
 	return id, nil
 }
 
+// lock pending events and subscription changes rows in outbox table
+
 func (r *Repository) Claim(ctx context.Context, worker string, limit int, lease time.Duration) ([]Message, error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
@@ -73,11 +75,13 @@ func (r *Repository) Claim(ctx context.Context, worker string, limit int, lease 
 	return msgs, nil
 }
 
+// release lock and mark successfully published
 func (r *Repository) MarkPublished(ctx context.Context, id uuid.UUID, worker string) error {
 	_, err := r.db.Exec(ctx, `UPDATE outbox_messages SET published_at=NOW(),locked_by=NULL,locked_until=NULL WHERE id=$1 AND locked_by=$2`, id, worker)
 	return err
 }
 
+// release lock to be retried later, locked by worked "id" ßfor the next "delay" seconds
 func (r *Repository) Release(ctx context.Context, id uuid.UUID, worker string, delay time.Duration) error {
 	_, err := r.db.Exec(ctx, `UPDATE outbox_messages SET available_at=NOW()+$3::interval,locked_by=NULL,locked_until=NULL WHERE id=$1 AND locked_by=$2`, id, worker, fmt.Sprintf("%f seconds", delay.Seconds()))
 	return err
