@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+
+	"github.com/google/uuid"
 )
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any, maxBody int64) error {
@@ -35,3 +37,6 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
+
+func parseID(r *http.Request) (uuid.UUID, error) { return uuid.Parse(r.PathValue("id")) }
+func decodePath(v string) (string, error)        { return v, nil }
