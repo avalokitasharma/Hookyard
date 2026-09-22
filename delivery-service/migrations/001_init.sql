@@ -91,9 +91,4 @@ CREATE TABLE delivery_attempts (
 CREATE INDEX idx_delivery_attempts_delivery
     ON delivery_attempts (delivery_id, attempt_number);
 
-CREATE TABLE processed_messages (
-    consumer_name VARCHAR(100) NOT NULL,
-    message_id VARCHAR(255) NOT NULL,
-    processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (consumer_name, message_id)
-);
+
