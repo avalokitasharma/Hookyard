@@ -50,6 +50,7 @@ CREATE TABLE deliveries (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     completed_at TIMESTAMPTZ NULL
+    UNIQUE(event_id, endpoint_id)
 );
 
 CREATE INDEX idx_deliveries_ready
@@ -66,8 +67,8 @@ CREATE INDEX idx_deliveries_tenant_created
 CREATE INDEX idx_deliveries_endpoint_created
     ON deliveries (endpoint_id, created_at DESC);
 
-CREATE INDEX idx_deliveries_event
-    ON deliveries (event_id);
+CREATE UNIQUE INDEX idx_deliveries_event_endpoint
+ON deliveries(event_id, endpoint_id);
 
 CREATE TABLE delivery_attempts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
