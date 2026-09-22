@@ -27,6 +27,14 @@ type RetryPolicy struct {
 	JitterPercent  int    `json:"jitter_percent"`
 }
 
+type EventAccepted struct {
+	MessageID string          `json:"message_id"`
+	EventID   uuid.UUID       `json:"event_id"`
+	TenantID  uuid.UUID       `json:"tenant_id"`
+	EventType string          `json:"event_type"`
+	Payload   json.RawMessage `json:"payload,omitempty"`
+}
+
 type EndpointSnapshot struct {
 	EventType        string
 	URL              string
