@@ -1,6 +1,23 @@
 package delivery
 
-import "github.com/google/uuid"
+import (
+	"encoding/json"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+type Status string
+
+const (
+	StatusPending    Status = "PENDING"
+	StatusInProgress Status = "IN_PROGRESS"
+	StatusRetrying   Status = "RETRYING"
+	StatusDelivered  Status = "DELIVERED"
+	StatusFailed     Status = "FAILED"
+	StatusDLQ        Status = "DLQ"
+	StatusCancelled  Status = "CANCELLED"
+)
 
 type RetryPolicy struct {
 	MaxAttempts    int    `json:"max_attempts"`
@@ -23,4 +40,26 @@ type EndpointSnapshotWithID struct {
 	EndpointID uuid.UUID
 	EventType  string
 	Snapshot   EndpointSnapshot
+}
+
+type Delivery struct {
+	ID                 uuid.UUID
+	TenantID           uuid.UUID
+	EventID            uuid.UUID
+	EndpointID         uuid.UUID
+	Status             Status
+	AttemptCount       int
+	NextAttemptAt      time.Time
+	LastAttemptAt      *time.Time
+	LastStatusCode     *int
+	LastErrorCode      *string
+	LastErrorMessage   *string
+	LeaseOwner         *string
+	LeaseExpiresAt     *time.Time
+	ReplayOfDeliveryID *uuid.UUID
+	EndpointSnapshot   EndpointSnapshot
+	EventPayload       json.RawMessage
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	CompletedAt        *time.Time
 }
