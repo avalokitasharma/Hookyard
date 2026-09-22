@@ -2,8 +2,11 @@ package endpoint
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
+	"github.com/avalokitasharma/HookYard/delivery-service/internal/delivery"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -65,4 +68,35 @@ func (r *Repository) Upsert(ctx context.Context, e EndpointChanged) error {
 		return fmt.Errorf("commit: %w", err)
 	}
 	return nil
+}
+
+func (r *Repository) GetForEvent(ctx context.Context, tenantID uuid.UUID, eventType string) ([]delivery.EndpointSnapshotWithID, error) {
+	rows, err := r.db.Query(ctx, `
+        SELECT e.endpoint_id, e.event_type, p.url, p.secret_encrypted,
+               p.connect_timeout_ms, p.request_timeout_ms, p.retry_policy
+        FROM endpoint_subscription_projection e
+        JOIN endpoint_projection p ON p.endpoint_id = e.endpoint_id
+        WHERE e.tenant_id = $1
+          AND e.event_type = $2
+          AND p.status = 'ACTIVE'
+    `, tenantID, eventType)
+	if err != nil {
+		return nil, fmt.Errorf("query endpoints: %w", err)
+	}
+	defer rows.Close()
+
+	var result []delivery.EndpointSnapshotWithID
+	for rows.Next() {
+		var x delivery.EndpointSnapshotWithID
+		var policyJSON []byte
+		if err := rows.Scan(&x.EndpointID, &x.EventType, &x.Snapshot.URL, &x.Snapshot.SecretEncrypted,
+			&x.Snapshot.ConnectTimeoutMS, &x.Snapshot.RequestTimeoutMS, &policyJSON); err != nil {
+			return nil, fmt.Errorf("scan endpoint: %w", err)
+		}
+		if err := json.Unmarshal(policyJSON, &x.Snapshot.RetryPolicy); err != nil {
+			return nil, fmt.Errorf("decode retry policy: %w", err)
+		}
+		result = append(result, x)
+	}
+	return result, rows.Err()
 }
