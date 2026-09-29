@@ -10,13 +10,16 @@ import (
 	"time"
 
 	"github.com/avalokitasharma/HookYard/delivery-service/internal/attempt"
-	"github.com/avalokitasharma/HookYard/delivery-service/internal/delivery"
 )
 
-const (
-	defaultRequestTimeout = 10 * time.Second
-	maxResponseBody       = 64 * 1024
-)
+type Request struct {
+	URL              string
+	Secret           []byte
+	RequestTimeoutMS int
+	EventID          string
+	EventType        string
+	Body             []byte
+}
 
 type Client struct {
 	httpClient *http.Client
@@ -39,92 +42,66 @@ func NewClient() *Client {
 	}
 }
 
-// post performs exactly one HTTP POST request.
-// It contains no retry
-func (c *Client) post(ctx context.Context, url string, body []byte, headers map[string]string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodPost,
-		url,
-		bytes.NewReader(body),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	for key, value := range headers {
-		req.Header.Set(key, value)
-	}
-
-	return c.httpClient.Do(req)
-}
-
-func (c *Client) Send(ctx context.Context, d *delivery.Delivery, body []byte) attempt.Result {
+func (c *Client) Send(ctx context.Context, reqData Request) attempt.Result {
 	start := time.Now()
 
-	timeout := time.Duration(d.EndpointSnapshot.RequestTimeoutMS) * time.Millisecond
+	timeout := time.Duration(reqData.RequestTimeoutMS) * time.Millisecond
 	if timeout <= 0 {
-		timeout = defaultRequestTimeout
+		timeout = 10 * time.Second
 	}
-
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
-	secret := d.EndpointSnapshot.SecretEncrypted
-
-	headers := map[string]string{
-		"Content-Type":          "application/json",
-		"User-Agent":            "Hookyard-Delivery/1.0",
-		"X-Hookyard-Event-ID":   d.EventID.String(),
-		"X-Hookyard-Event-Type": d.EndpointSnapshot.EventType,
-		"X-Hookyard-Timestamp":  timestamp,
-		"X-Hookyard-Signature":  Sign(secret, timestamp, body),
-	}
-
-	resp, err := c.post(
+	req, err := http.NewRequestWithContext(
 		requestCtx,
-		d.EndpointSnapshot.URL,
-		body,
-		headers,
+		http.MethodPost,
+		reqData.URL,
+		bytes.NewReader(reqData.Body),
 	)
 	if err != nil {
-		code := "HTTP_ERROR"
+		code := "REQUEST_BUILD_ERROR"
+		msg := err.Error()
+		return attempt.Result{Status: attempt.StatusPermanent, ErrorCode: &code, ErrorMessage: &msg, Latency: time.Since(start)}
+	}
 
+	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "Hookyard-Delivery/1.0")
+	req.Header.Set("X-Hookyard-Event-ID", reqData.EventID)
+	req.Header.Set("X-Hookyard-Event-Type", reqData.EventType)
+	req.Header.Set("X-Hookyard-Timestamp", timestamp)
+	req.Header.Set("X-Hookyard-Signature", Sign(reqData.Secret, timestamp, reqData.Body))
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		code := "HTTP_ERROR"
 		if requestCtx.Err() == context.DeadlineExceeded {
 			code = "TIMEOUT"
 		}
-
 		msg := err.Error()
-
-		return attempt.Result{
-			Status:       attempt.StatusRetryable,
-			ErrorCode:    &code,
-			ErrorMessage: &msg,
-			Latency:      time.Since(start),
-		}
+		return attempt.Result{Status: attempt.StatusRetryable, ErrorCode: &code, ErrorMessage: &msg, Latency: time.Since(start)}
 	}
-
 	defer resp.Body.Close()
 
-	responseBytes, err := readResponseBody(resp.Body)
-	if err != nil {
+	const maxResponseBody = 64 * 1024
+	responseBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
+	if readErr != nil {
 		code := "RESPONSE_READ_ERROR"
-		msg := err.Error()
-
-		return attempt.Result{
-			Status:       attempt.StatusRetryable,
-			ErrorCode:    &code,
-			ErrorMessage: &msg,
-			Latency:      time.Since(start),
-		}
+		msg := readErr.Error()
+		return attempt.Result{Status: attempt.StatusRetryable, ErrorCode: &code, ErrorMessage: &msg, Latency: time.Since(start)}
 	}
 
 	statusCode := resp.StatusCode
+	headers := map[string]string{}
+	for key, values := range resp.Header {
+		if len(values) > 0 {
+			headers[key] = values[0]
+		}
+	}
 
 	result := attempt.Result{
 		HTTPStatusCode:  &statusCode,
-		ResponseHeaders: responseHeaders(resp),
+		ResponseHeaders: headers,
 		ResponseBody:    string(responseBytes),
 		Latency:         time.Since(start),
 	}
@@ -132,50 +109,19 @@ func (c *Client) Send(ctx context.Context, d *delivery.Delivery, body []byte) at
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		result.Status = attempt.StatusSuccess
-
-	case resp.StatusCode == http.StatusRequestTimeout ||
-		resp.StatusCode == http.StatusTooManyRequests ||
-		resp.StatusCode >= 500:
-
+	case resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500:
 		result.Status = attempt.StatusRetryable
-
 		code := fmt.Sprintf("HTTP_%d", resp.StatusCode)
 		result.ErrorCode = &code
-
-		msg := fmt.Sprintf(
-			"consumer returned HTTP %d",
-			resp.StatusCode,
-		)
+		msg := fmt.Sprintf("consumer returned HTTP %d", resp.StatusCode)
 		result.ErrorMessage = &msg
-
 	default:
 		result.Status = attempt.StatusPermanent
-
 		code := fmt.Sprintf("HTTP_%d", resp.StatusCode)
 		result.ErrorCode = &code
-
-		msg := fmt.Sprintf(
-			"consumer returned HTTP %d",
-			resp.StatusCode,
-		)
+		msg := fmt.Sprintf("consumer returned HTTP %d", resp.StatusCode)
 		result.ErrorMessage = &msg
 	}
 
 	return result
-}
-
-func readResponseBody(body io.Reader) ([]byte, error) {
-	return io.ReadAll(io.LimitReader(body, maxResponseBody))
-}
-
-func responseHeaders(resp *http.Response) map[string]string {
-	headers := make(map[string]string, len(resp.Header))
-
-	for key, values := range resp.Header {
-		if len(values) > 0 {
-			headers[key] = values[0]
-		}
-	}
-
-	return headers
 }
