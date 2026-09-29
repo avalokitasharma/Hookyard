@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -75,4 +77,28 @@ func (r *Repository) CreateDeliveries(ctx context.Context, event EventAccepted, 
 	}
 
 	return tx.Commit(ctx)
+}
+
+func (r *Repository) Get(ctx context.Context, tenantID, id uuid.UUID) (*Delivery, error) {
+	var d Delivery
+	var policyJSON []byte
+	err := r.db.QueryRow(ctx, `
+        SELECT id,tenant_id,event_id,endpoint_id,event_type,event_payload,status,attempt_count,next_attempt_at,last_attempt_at,
+               last_status_code,last_error_code,last_error_message,lease_owner,lease_expires_at,replay_of_delivery_id,
+               endpoint_url,endpoint_secret_encrypted,connect_timeout_ms,request_timeout_ms,retry_policy,created_at,updated_at,completed_at
+        FROM deliveries WHERE id=$1 AND tenant_id=$2
+    `, id, tenantID).Scan(&d.ID, &d.TenantID, &d.EventID, &d.EndpointID, &d.EndpointSnapshot.EventType, &d.EventPayload, &d.Status, &d.AttemptCount, &d.NextAttemptAt,
+		&d.LastAttemptAt, &d.LastStatusCode, &d.LastErrorCode, &d.LastErrorMessage, &d.LeaseOwner, &d.LeaseExpiresAt, &d.ReplayOfDeliveryID,
+		&d.EndpointSnapshot.URL, &d.EndpointSnapshot.SecretEncrypted, &d.EndpointSnapshot.ConnectTimeoutMS, &d.EndpointSnapshot.RequestTimeoutMS,
+		&policyJSON, &d.CreatedAt, &d.UpdatedAt, &d.CompletedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(policyJSON, &d.EndpointSnapshot.RetryPolicy); err != nil {
+		return nil, err
+	}
+	return &d, nil
 }
