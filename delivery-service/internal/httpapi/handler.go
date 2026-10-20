@@ -53,6 +53,26 @@ func (h *Handler) GetDelivery(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) ReplayDelivery(w http.ResponseWriter, r *http.Request) {
+	tenantID, err := tenantID(r)
+	if err != nil {
+		writeError(w, 401, "invalid tenant")
+		return
+	}
+	id, err := uuid.Parse(strings.TrimPrefix(r.URL.Path, "/v1/deliveries/"))
+	if err != nil {
+		writeError(w, 400, "invalid delivery ID")
+		return
+	}
+	newID, err := h.service.Replay(r.Context(), tenantID, id)
+	if errors.Is(err, delivery.ErrNotFound) {
+		writeError(w, 404, "delivery not found")
+		return
+	}
+	if err != nil {
+		writeError(w, 409, err.Error())
+		return
+	}
+	writeJSON(w, 202, map[string]any{"delivery_id": newID, "status": "queued"})
 }
 
 func (h *Handler) Health(w http.ResponseWriter, _ *http.Request) {

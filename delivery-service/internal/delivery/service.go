@@ -83,4 +83,15 @@ func (s *Service) Deliver(ctx context.Context, d Delivery) error {
 	return s.repo.RecordAttemptAndTransition(ctx, d, result, next)
 }
 
+func (s *Service) Replay(ctx context.Context, tenantID, id uuid.UUID) (uuid.UUID, error) {
+	d, err := s.repo.Get(ctx, tenantID, id)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if d.Status != StatusFailed && d.Status != StatusDLQ {
+		return uuid.Nil, fmt.Errorf("delivery cannot be replayed from status %s", d.Status)
+	}
+	return s.repo.CreateReplay(ctx, *d)
+}
+
 var _ SecretDecryptor = (*secrets.Cipher)(nil)
