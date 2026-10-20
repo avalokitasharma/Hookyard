@@ -49,6 +49,10 @@ func (s *Service) HandleEventAccepted(ctx context.Context, e EventAccepted) erro
 	return s.repo.CreateDeliveries(ctx, e, endpoints)
 }
 
+func (s *Service) Get(ctx context.Context, tenantID, id uuid.UUID) (*Delivery, error) {
+	return s.repo.Get(ctx, tenantID, id)
+}
+
 func (s *Service) Deliver(ctx context.Context, d Delivery) error {
 	secret, err := s.decryptor.Decrypt(d.EndpointSnapshot.SecretEncrypted)
 	if err != nil {
