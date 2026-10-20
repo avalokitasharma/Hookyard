@@ -26,8 +26,8 @@ type Service struct {
 	decryptor SecretDecryptor
 }
 
-func NewService(repo *Repository, endpoints EndpointReader, client *webhook.Client) *Service {
-	return &Service{repo: repo, endpoints: endpoints, client: client}
+func NewService(repo *Repository, endpoints EndpointReader, client *webhook.Client, decryptor SecretDecryptor) *Service {
+	return &Service{repo: repo, endpoints: endpoints, client: client, decryptor: decryptor}
 }
 
 func (s *Service) HandleEventAccepted(ctx context.Context, e EventAccepted) error {
