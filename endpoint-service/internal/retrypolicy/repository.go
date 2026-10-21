@@ -12,6 +12,8 @@ type Repository struct {
 	db *pgxpool.Pool
 }
 
+func NewRepository(db *pgxpool.Pool) *Repository { return &Repository{db: db} }
+
 func (r *Repository) Get(ctx context.Context, tenantID, id uuid.UUID) (Policy, error) {
 	var p Policy
 	err := r.db.QueryRow(ctx,

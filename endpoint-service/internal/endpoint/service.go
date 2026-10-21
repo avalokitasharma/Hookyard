@@ -2,13 +2,11 @@ package endpoint
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/avalokitasharma/HookYard/endpoint-service/internal/retrypolicy"
 	"github.com/avalokitasharma/HookYard/endpoint-service/internal/secrets"
-	"github.com/avalokitasharma/HookYard/endpoint-service/internal/tenant"
 	"github.com/avalokitasharma/HookYard/endpoint-service/internal/validation"
 	"github.com/google/uuid"
 )
@@ -17,24 +15,19 @@ type Service struct {
 	repo      *Repository
 	policies  *retrypolicy.Repository
 	cipher    *secrets.Cipher
-	tenants   *tenant.Repository
 	allowHTTP bool
 }
 
-func NewService(repo *Repository, policies *retrypolicy.Repository, cipher *secrets.Cipher, tenants *tenant.Repository, allowHTTP bool) *Service {
+func NewService(repo *Repository, policies *retrypolicy.Repository, cipher *secrets.Cipher, allowHTTP bool) *Service {
 	return &Service{
 		repo:      repo,
 		policies:  policies,
 		cipher:    cipher,
-		tenants:   tenants,
 		allowHTTP: allowHTTP,
 	}
 }
 
 func (s *Service) Create(ctx context.Context, tenantID uuid.UUID, req CreateRequest) (Endpoint, error) {
-	if err := s.ensureActiveTenant(ctx, tenantID); err != nil {
-		return Endpoint{}, err
-	}
 	if err := validateTenant(tenantID); err != nil {
 		return Endpoint{}, err
 	}
@@ -71,16 +64,13 @@ func (s *Service) Create(ctx context.Context, tenantID uuid.UUID, req CreateRequ
 }
 
 func (s *Service) Get(ctx context.Context, tenantID, id uuid.UUID) (Endpoint, retrypolicy.Policy, error) {
-	if err := s.ensureActiveTenant(ctx, tenantID); err != nil {
+	if err := validateTenant(tenantID); err != nil {
 		return Endpoint{}, retrypolicy.Policy{}, err
 	}
 	return s.repo.GetEndpoint(ctx, tenantID, id)
 }
 
 func (s *Service) Patch(ctx context.Context, tenantID, id uuid.UUID, req PatchRequest) (Endpoint, retrypolicy.Policy, error) {
-	if err := s.ensureActiveTenant(ctx, tenantID); err != nil {
-		return Endpoint{}, retrypolicy.Policy{}, err
-	}
 	if err := validateTenant(tenantID); err != nil {
 		return Endpoint{}, retrypolicy.Policy{}, err
 	}
@@ -136,15 +126,12 @@ func (s *Service) Patch(ctx context.Context, tenantID, id uuid.UUID, req PatchRe
 }
 
 func (s *Service) Delete(ctx context.Context, tenantID, id uuid.UUID) (Endpoint, retrypolicy.Policy, error) {
-	if err := s.ensureActiveTenant(ctx, tenantID); err != nil {
+	if err := validateTenant(tenantID); err != nil {
 		return Endpoint{}, retrypolicy.Policy{}, err
 	}
 	return s.repo.Delete(ctx, tenantID, id)
 }
 func (s *Service) Subscriptions(ctx context.Context, tenantID uuid.UUID, eventType string) ([]Endpoint, error) {
-	if err := s.ensureActiveTenant(ctx, tenantID); err != nil {
-		return nil, err
-	}
 	if err := validateTenant(tenantID); err != nil {
 		return nil, err
 	}
@@ -174,24 +161,6 @@ func normalizeCreate(r *CreateRequest) {
 	if r.RequestTimeoutMS == 0 {
 		r.RequestTimeoutMS = 10000
 	}
-}
-func (s *Service) ensureActiveTenant(ctx context.Context, id uuid.UUID) error {
-	if err := validateTenant(id); err != nil {
-		return err
-	}
-	if s.tenants == nil {
-		return fmt.Errorf("tenant repository is not configured")
-	}
-	if err := s.tenants.EnsureActive(ctx, id); err != nil {
-		if errors.Is(err, tenant.ErrNotFound) {
-			return fmt.Errorf("%w: tenant not found", ErrInvalid)
-		}
-		if errors.Is(err, tenant.ErrInactive) {
-			return fmt.Errorf("%w: tenant is not active", ErrInvalid)
-		}
-		return fmt.Errorf("check tenant: %w", err)
-	}
-	return nil
 }
 
 func validateTenant(id uuid.UUID) error {
