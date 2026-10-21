@@ -26,3 +26,8 @@ type APIKey struct {
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
 }
+
+type UpdateTenantRequest struct {
+	Name   *string `json:"name,omitempty"`
+	Status *string `json:"status,omitempty"`
+}
