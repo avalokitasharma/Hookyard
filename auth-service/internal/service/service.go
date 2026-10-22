@@ -13,9 +13,14 @@ import (
 	"github.com/google/uuid"
 )
 
-type Service struct{ repo *repository.Repository }
+type Service struct {
+	repo *repository.Repository
+}
 
-func New(r *repository.Repository) *Service { return &Service{repo: r} }
+func New(r *repository.Repository) *Service {
+	return &Service{repo: r}
+}
+
 func (s *Service) CreateTenant(ctx context.Context, req model.CreateTenantRequest, actor string) (model.Tenant, model.CreatedKey, error) {
 	t, err := s.repo.CreateTenant(ctx, req.Name)
 	if err != nil {
