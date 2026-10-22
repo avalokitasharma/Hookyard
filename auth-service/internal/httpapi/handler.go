@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -32,11 +33,11 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("POST /internal/v1/tenants", h.admin(http.HandlerFunc(h.createTenant)))
 	mux.Handle("GET /internal/v1/tenants", h.admin(http.HandlerFunc(h.listTenants)))
 	mux.Handle("GET /internal/v1/tenants/{tenantID}", h.admin(http.HandlerFunc(h.getTenant)))
-	// mux.Handle("PATCH /internal/v1/tenants/{tenantID}", h.admin(http.HandlerFunc(h.updateTenant)))
-	// mux.Handle("DELETE /internal/v1/tenants/{tenantID}", h.admin(http.HandlerFunc(h.deleteTenant)))
-	// mux.Handle("POST /internal/v1/tenants/{tenantID}/keys", h.admin(http.HandlerFunc(h.createKey)))
-	// mux.Handle("GET /internal/v1/tenants/{tenantID}/keys", h.admin(http.HandlerFunc(h.listKeys)))
-	// mux.Handle("DELETE /internal/v1/tenants/{tenantID}/keys/{keyID}", h.admin(http.HandlerFunc(h.revokeKey)))
+	mux.Handle("PATCH /internal/v1/tenants/{tenantID}", h.admin(http.HandlerFunc(h.updateTenant)))
+	mux.Handle("DELETE /internal/v1/tenants/{tenantID}", h.admin(http.HandlerFunc(h.deleteTenant)))
+	mux.Handle("POST /internal/v1/tenants/{tenantID}/keys", h.admin(http.HandlerFunc(h.createKey)))
+	mux.Handle("GET /internal/v1/tenants/{tenantID}/keys", h.admin(http.HandlerFunc(h.listKeys)))
+	mux.Handle("DELETE /internal/v1/tenants/{tenantID}/keys/{keyID}", h.admin(http.HandlerFunc(h.revokeKey)))
 }
 
 func (h *Handler) admin(next http.Handler) http.Handler {
@@ -125,6 +126,118 @@ func (h *Handler) getTenant(w http.ResponseWriter, r *http.Request) {
 	write(w, 200, t)
 }
 
+func (h *Handler) updateTenant(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("tenantID"))
+	if err != nil {
+		write(w, 400, map[string]string{"error": "invalid tenantID"})
+		return
+	}
+	var req model.UpdateTenantRequest
+	if decode(r, &req) != nil {
+		write(w, 400, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	ctx, cancel := contextWithTimeout(r)
+	defer cancel()
+	t, err := h.s.UpdateTenant(ctx, id, req)
+	if errors.Is(err, repository.ErrNotFound) {
+		write(w, 404, map[string]string{"error": "tenant not found"})
+		return
+	}
+	if errors.Is(err, repository.ErrConflict) {
+		write(w, 409, map[string]string{"error": "tenant name already exists"})
+		return
+	}
+	if err != nil {
+		write(w, 400, map[string]string{"error": err.Error()})
+		return
+	}
+	write(w, 200, t)
+}
+
+func (h *Handler) deleteTenant(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("tenantID"))
+	if err != nil {
+		write(w, 400, map[string]string{"error": "invalid tenantID"})
+		return
+	}
+	ctx, cancel := contextWithTimeout(r)
+	defer cancel()
+	t, err := h.s.DeleteTenant(ctx, id)
+	if errors.Is(err, repository.ErrNotFound) {
+		write(w, 404, map[string]string{"error": "tenant not found"})
+		return
+	}
+	if err != nil {
+		h.logger.Error("delete tenant failed", "error", err)
+		write(w, 500, map[string]string{"error": "internal error"})
+		return
+	}
+	write(w, 200, t)
+}
+
+func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
+	tid, err := uuid.Parse(r.PathValue("tenantID"))
+	if err != nil {
+		write(w, 400, map[string]string{"error": "invalid tenantID"})
+		return
+	}
+	var req model.CreateKeyRequest
+	if decode(r, &req) != nil {
+		write(w, 400, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	ctx, cancel := contextWithTimeout(r)
+	defer cancel()
+	k, err := h.s.CreateKey(ctx, tid, req, r.Header.Get("X-Admin-Actor"))
+	if err != nil {
+		status := 400
+		if errors.Is(err, repository.ErrNotFound) {
+			status = 404
+		}
+		write(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	write(w, 201, k)
+}
+
+func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
+	tid, err := uuid.Parse(r.PathValue("tenantID"))
+	if err != nil {
+		write(w, 400, map[string]string{"error": "invalid tenantID"})
+		return
+	}
+	ctx, cancel := contextWithTimeout(r)
+	defer cancel()
+	keys, err := h.s.ListKeys(ctx, tid)
+	if err != nil {
+		write(w, 500, map[string]string{"error": "internal error"})
+		return
+	}
+	write(w, 200, map[string]any{"keys": keys})
+}
+
+func (h *Handler) revokeKey(w http.ResponseWriter, r *http.Request) {
+	tid, e1 := uuid.Parse(r.PathValue("tenantID"))
+	kid, e2 := uuid.Parse(r.PathValue("keyID"))
+	if e1 != nil || e2 != nil {
+		write(w, 400, map[string]string{"error": "invalid ID"})
+		return
+	}
+	ctx, cancel := contextWithTimeout(r)
+	defer cancel()
+	err := h.s.RevokeKey(ctx, tid, kid, r.Header.Get("X-Admin-Actor"))
+	if errors.Is(err, repository.ErrNotFound) {
+		write(w, 404, map[string]string{"error": "key not found"})
+		return
+	}
+	if err != nil {
+		write(w, 500, map[string]string{"error": "internal error"})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func decode(r *http.Request, v any) error {
 	r.Body = http.MaxBytesReader(nil, r.Body, 1<<20)
 	d := json.NewDecoder(r.Body)
@@ -138,14 +251,7 @@ func write(w http.ResponseWriter, status int, v any) {
 }
 
 func constantEqual(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	var x byte
-	for i := range a {
-		x |= a[i] ^ b[i]
-	}
-	return x == 0
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 func contextWithTimeout(r *http.Request) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(r.Context(), 3*time.Second)
