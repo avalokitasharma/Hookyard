@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -338,6 +339,62 @@ func (r *Repository) List(ctx context.Context, tenantID uuid.UUID, filter ListFi
 		last := items[limit-1]
 		page.Items = items[:limit]
 		page.NextCursor = base64.RawURLEncoding.EncodeToString([]byte(last.CreatedAt.UTC().Format(time.RFC3339Nano) + "|" + last.ID.String()))
+	}
+	return page, nil
+}
+
+func (r *Repository) ListAttempts(ctx context.Context, tenantID, deliveryID uuid.UUID, limit int, cursor string) (AttemptPage, error) {
+	if limit < 1 || limit > 100 {
+		limit = 50
+	}
+	var after int
+	if cursor != "" {
+		decoded, err := base64.RawURLEncoding.DecodeString(cursor)
+		if err != nil {
+			return AttemptPage{}, fmt.Errorf("invalid cursor")
+		}
+		parsed, err := strconv.Atoi(string(decoded))
+		if err != nil || parsed < 0 {
+			return AttemptPage{}, fmt.Errorf("invalid cursor")
+		}
+		after = parsed
+	}
+	rows, err := r.db.Query(ctx, `
+		SELECT a.attempt_number,a.status,a.http_status_code,a.latency_ms,a.error_code,a.started_at,a.completed_at
+		FROM delivery_attempts a
+		JOIN deliveries d ON d.id=a.delivery_id
+		WHERE d.tenant_id=$1 AND d.id=$2 AND a.attempt_number>$3
+		ORDER BY a.attempt_number ASC
+		LIMIT $4`, tenantID, deliveryID, after, limit+1)
+	if err != nil {
+		return AttemptPage{}, fmt.Errorf("list attempts: %w", err)
+	}
+	defer rows.Close()
+	items := make([]AttemptView, 0, limit+1)
+	for rows.Next() {
+		var a AttemptView
+		if err := rows.Scan(&a.AttemptNumber, &a.Status, &a.HTTPStatusCode, &a.LatencyMS, &a.ErrorCode, &a.StartedAt, &a.CompletedAt); err != nil {
+			return AttemptPage{}, err
+		}
+		items = append(items, a)
+	}
+	if err := rows.Err(); err != nil {
+		return AttemptPage{}, err
+	}
+	page := AttemptPage{Items: items}
+	if len(items) > limit {
+		last := items[limit-1]
+		page.Items = items[:limit]
+		page.NextCursor = base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf("%d", last.AttemptNumber)))
+	}
+	if len(page.Items) == 0 {
+		var exists bool
+		if err := r.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM deliveries WHERE id=$1 AND tenant_id=$2)`, deliveryID, tenantID).Scan(&exists); err != nil {
+			return AttemptPage{}, err
+		}
+		if !exists {
+			return AttemptPage{}, ErrNotFound
+		}
 	}
 	return page, nil
 }

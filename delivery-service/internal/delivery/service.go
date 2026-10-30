@@ -109,3 +109,10 @@ func (s *Service) ListDLQ(ctx context.Context, tenantID uuid.UUID, filter ListFi
 	}
 	return s.repo.List(ctx, tenantID, filter, true)
 }
+
+func (s *Service) ListAttempts(ctx context.Context, tenantID, deliveryID uuid.UUID, limit int, cursor string) (AttemptPage, error) {
+	if tenantID == uuid.Nil {
+		return AttemptPage{}, fmt.Errorf("invalid tenant id")
+	}
+	return s.repo.ListAttempts(ctx, tenantID, deliveryID, limit, cursor)
+}

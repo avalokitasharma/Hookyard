@@ -178,3 +178,36 @@ func (h *Handler) ListDLQ(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, deliveryPageResponse(page))
 }
+func pathID(r *http.Request) (uuid.UUID, error) { return uuid.Parse(r.PathValue("id")) }
+
+func (h *Handler) ListAttempts(w http.ResponseWriter, r *http.Request) {
+	tenantID, err := tenantID(r)
+	if err != nil {
+		writeError(w, 401, "invalid tenant")
+		return
+	}
+	id, err := pathID(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid delivery ID")
+		return
+	}
+	raw := r.URL.Query().Get("limit")
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit < 1 || limit > 100 {
+		limit = 50
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	page, err := h.service.ListAttempts(r.Context(), tenantID, id, limit, r.URL.Query().Get("cursor"))
+	if errors.Is(err, delivery.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "delivery not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
+}
