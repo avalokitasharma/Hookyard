@@ -80,6 +80,7 @@ func main() {
 	mux.HandleFunc("GET /v1/deliveries", h.ListDeliveries)
 	mux.HandleFunc("GET /v1/deliveries/{id}", h.GetDelivery)
 	mux.HandleFunc("POST /v1/deliveries/{id}/replay", h.ReplayDelivery)
+	mux.HandleFunc("GET /v1/dlq", h.ListDLQ)
 
 	server := &http.Server{
 		Addr:              envString("HTTP_ADDR", ":8081"),

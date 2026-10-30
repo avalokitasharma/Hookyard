@@ -102,3 +102,10 @@ func (s *Service) List(ctx context.Context, tenantID uuid.UUID, filter ListFilte
 	}
 	return s.repo.List(ctx, tenantID, filter, false)
 }
+
+func (s *Service) ListDLQ(ctx context.Context, tenantID uuid.UUID, filter ListFilter) (DeliveryPage, error) {
+	if tenantID == uuid.Nil {
+		return DeliveryPage{}, fmt.Errorf("invalid tenant id")
+	}
+	return s.repo.List(ctx, tenantID, filter, true)
+}

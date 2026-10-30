@@ -159,3 +159,22 @@ func parseListFilter(r *http.Request) (delivery.ListFilter, error) {
 	}
 	return filter, nil
 }
+
+func (h *Handler) ListDLQ(w http.ResponseWriter, r *http.Request) {
+	tenantID, err := tenantID(r)
+	if err != nil {
+		writeError(w, 401, "invalid tenant")
+		return
+	}
+	filter, err := parseListFilter(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	page, err := h.service.ListDLQ(r.Context(), tenantID, filter)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, deliveryPageResponse(page))
+}
