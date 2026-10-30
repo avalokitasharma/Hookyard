@@ -32,6 +32,8 @@ CREATE TABLE deliveries (
     tenant_id UUID NOT NULL,
     event_id UUID NOT NULL,
     endpoint_id UUID NOT NULL,
+    event_type VARCHAR(255) NOT NULL,
+    event_payload JSONB NOT NULL,
     status VARCHAR(32) NOT NULL,
     attempt_count INTEGER NOT NULL DEFAULT 0,
     next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -50,8 +52,11 @@ CREATE TABLE deliveries (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     completed_at TIMESTAMPTZ NULL
-    UNIQUE(event_id, endpoint_id)
 );
+
+CREATE UNIQUE INDEX idx_deliveries_original_event_endpoint
+    ON deliveries (event_id, endpoint_id)
+    WHERE replay_of_delivery_id IS NULL;
 
 CREATE INDEX idx_deliveries_ready
     ON deliveries (next_attempt_at)
@@ -62,13 +67,19 @@ CREATE INDEX idx_deliveries_lease_expired
     WHERE status = 'IN_PROGRESS';
 
 CREATE INDEX idx_deliveries_tenant_created
-    ON deliveries (tenant_id, created_at DESC);
+    ON deliveries (tenant_id, created_at DESC, id DESC);
+
+CREATE INDEX idx_deliveries_tenant_status_created
+    ON deliveries (tenant_id, status, created_at DESC, id DESC);
+
+CREATE INDEX idx_deliveries_tenant_endpoint_created
+    ON deliveries (tenant_id, endpoint_id, created_at DESC, id DESC);
+
+CREATE INDEX idx_deliveries_tenant_event_created
+    ON deliveries (tenant_id, event_id, created_at DESC, id DESC);
 
 CREATE INDEX idx_deliveries_endpoint_created
     ON deliveries (endpoint_id, created_at DESC);
-
-CREATE UNIQUE INDEX idx_deliveries_event_endpoint
-ON deliveries(event_id, endpoint_id);
 
 CREATE TABLE delivery_attempts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
