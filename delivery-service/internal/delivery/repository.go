@@ -2,9 +2,11 @@ package delivery
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/avalokitasharma/HookYard/delivery-service/internal/attempt"
@@ -247,4 +249,95 @@ func (r *Repository) CreateReplay(ctx context.Context, original Delivery) (uuid.
 		original.EndpointSnapshot.URL, original.EndpointSnapshot.SecretEncrypted,
 		original.EndpointSnapshot.ConnectTimeoutMS, original.EndpointSnapshot.RequestTimeoutMS, policy)
 	return id, err
+}
+
+func (r *Repository) List(ctx context.Context, tenantID uuid.UUID, filter ListFilter, dlqOnly bool) (DeliveryPage, error) {
+	limit := filter.Limit
+	if limit < 1 || limit > 100 {
+		limit = 50
+	}
+	status := strings.ToUpper(strings.TrimSpace(filter.Status))
+	if dlqOnly {
+		if status != "" && status != string(StatusDLQ) {
+			return DeliveryPage{}, fmt.Errorf("invalid DLQ status filter")
+		}
+		status = string(StatusDLQ)
+	} else if status != "" && status != string(StatusPending) && status != string(StatusInProgress) && status != string(StatusRetrying) && status != string(StatusDelivered) && status != string(StatusFailed) && status != string(StatusDLQ) && status != string(StatusCancelled) {
+		return DeliveryPage{}, fmt.Errorf("invalid delivery status filter")
+	}
+
+	var cursorTime time.Time
+	var cursorID uuid.UUID
+	if filter.Cursor != "" {
+		decoded, err := base64.RawURLEncoding.DecodeString(filter.Cursor)
+		if err != nil {
+			return DeliveryPage{}, fmt.Errorf("invalid cursor")
+		}
+		parts := strings.Split(string(decoded), "|")
+		if len(parts) != 2 {
+			return DeliveryPage{}, fmt.Errorf("invalid cursor")
+		}
+		cursorTime, err = time.Parse(time.RFC3339Nano, parts[0])
+		if err != nil {
+			return DeliveryPage{}, fmt.Errorf("invalid cursor")
+		}
+		cursorID, err = uuid.Parse(parts[1])
+		if err != nil {
+			return DeliveryPage{}, fmt.Errorf("invalid cursor")
+		}
+	}
+
+	args := []any{tenantID}
+	where := "WHERE tenant_id=$1"
+	if status != "" {
+		args = append(args, status)
+		where += fmt.Sprintf(" AND status=$%d", len(args))
+	}
+	if filter.EndpointID != nil {
+		args = append(args, *filter.EndpointID)
+		where += fmt.Sprintf(" AND endpoint_id=$%d", len(args))
+	}
+	if filter.EventID != nil {
+		args = append(args, *filter.EventID)
+		where += fmt.Sprintf(" AND event_id=$%d", len(args))
+	}
+	if !cursorTime.IsZero() {
+		args = append(args, cursorTime, cursorID)
+		where += fmt.Sprintf(" AND (created_at,id)<($%d,$%d)", len(args)-1, len(args))
+	}
+	args = append(args, limit+1)
+	query := fmt.Sprintf(`
+		SELECT id,tenant_id,event_id,endpoint_id,status,attempt_count,next_attempt_at,last_attempt_at,
+		       last_status_code,last_error_code,replay_of_delivery_id,created_at,updated_at,completed_at
+		FROM deliveries
+		%s
+		ORDER BY created_at DESC,id DESC
+		LIMIT $%d`, where, len(args))
+	rows, err := r.db.Query(ctx, query, args...)
+	if err != nil {
+		return DeliveryPage{}, fmt.Errorf("list deliveries: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]Delivery, 0, limit+1)
+	for rows.Next() {
+		var d Delivery
+		if err := rows.Scan(&d.ID, &d.TenantID, &d.EventID, &d.EndpointID, &d.Status, &d.AttemptCount,
+			&d.NextAttemptAt, &d.LastAttemptAt, &d.LastStatusCode, &d.LastErrorCode,
+			&d.ReplayOfDeliveryID, &d.CreatedAt, &d.UpdatedAt, &d.CompletedAt); err != nil {
+			return DeliveryPage{}, fmt.Errorf("scan delivery: %w", err)
+		}
+		items = append(items, d)
+	}
+	if err := rows.Err(); err != nil {
+		return DeliveryPage{}, err
+	}
+
+	page := DeliveryPage{Items: items}
+	if len(items) > limit {
+		last := items[limit-1]
+		page.Items = items[:limit]
+		page.NextCursor = base64.RawURLEncoding.EncodeToString([]byte(last.CreatedAt.UTC().Format(time.RFC3339Nano) + "|" + last.ID.String()))
+	}
+	return page, nil
 }

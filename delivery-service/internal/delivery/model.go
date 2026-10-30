@@ -71,3 +71,32 @@ type Delivery struct {
 	UpdatedAt          time.Time
 	CompletedAt        *time.Time
 }
+
+// ListFilter is a tenant-scoped delivery query filter.
+type ListFilter struct {
+	Limit      int
+	Cursor     string
+	Status     string
+	EndpointID *uuid.UUID
+	EventID    *uuid.UUID
+}
+
+type DeliveryPage struct {
+	Items      []Delivery
+	NextCursor string
+}
+
+type AttemptView struct {
+	AttemptNumber  int       `json:"attempt_number"`
+	Status         string    `json:"status"`
+	HTTPStatusCode *int      `json:"http_status_code,omitempty"`
+	LatencyMS      *int      `json:"latency_ms,omitempty"`
+	ErrorCode      *string   `json:"error_code,omitempty"`
+	StartedAt      time.Time `json:"started_at"`
+	CompletedAt    time.Time `json:"completed_at"`
+}
+
+type AttemptPage struct {
+	Items      []AttemptView `json:"items"`
+	NextCursor string        `json:"next_cursor"`
+}

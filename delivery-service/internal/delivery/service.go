@@ -95,3 +95,10 @@ func (s *Service) Replay(ctx context.Context, tenantID, id uuid.UUID) (uuid.UUID
 }
 
 var _ SecretDecryptor = (*secrets.Cipher)(nil)
+
+func (s *Service) List(ctx context.Context, tenantID uuid.UUID, filter ListFilter) (DeliveryPage, error) {
+	if tenantID == uuid.Nil {
+		return DeliveryPage{}, fmt.Errorf("invalid tenant id")
+	}
+	return s.repo.List(ctx, tenantID, filter, false)
+}

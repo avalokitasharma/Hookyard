@@ -77,6 +77,7 @@ func main() {
 	h := httpapi.NewHandler(deliveryService)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", h.Health)
+	mux.HandleFunc("GET /v1/deliveries", h.ListDeliveries)
 	mux.HandleFunc("GET /v1/deliveries/{id}", h.GetDelivery)
 	mux.HandleFunc("POST /v1/deliveries/{id}/replay", h.ReplayDelivery)
 
