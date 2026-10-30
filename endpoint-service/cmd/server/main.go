@@ -56,6 +56,7 @@ func main() {
 	})
 
 	mux.HandleFunc("POST /v1/endpoints", eh.Create)
+	mux.HandleFunc("GET /v1/endpoints", eh.List)
 	mux.HandleFunc("GET /v1/endpoints/{id}", eh.GetEndpoint)
 	mux.HandleFunc("PATCH /v1/endpoints/{id}", eh.Patch)
 	mux.HandleFunc("DELETE /v1/endpoints/{id}", eh.Delete)

@@ -169,3 +169,10 @@ func validateTenant(id uuid.UUID) error {
 	}
 	return nil
 }
+
+func (s *Service) List(ctx context.Context, tenantID uuid.UUID, filter ListFilter) (EndpointPage, error) {
+	if err := validateTenant(tenantID); err != nil {
+		return EndpointPage{}, err
+	}
+	return s.repo.List(ctx, tenantID, filter)
+}

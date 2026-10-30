@@ -2,6 +2,7 @@ package endpoint
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
@@ -336,4 +337,93 @@ func (r *Repository) GetSubscriptions(ctx context.Context, tenantID uuid.UUID, e
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+func (r *Repository) List(ctx context.Context, tenantID uuid.UUID, filter ListFilter) (EndpointPage, error) {
+	limit := filter.Limit
+	if limit < 1 || limit > 100 {
+		limit = 50
+	}
+	status := strings.ToUpper(strings.TrimSpace(filter.Status))
+	if status == "" {
+		status = StatusActive
+	}
+	if status != StatusActive && status != StatusDeleted && status != "ALL" {
+		return EndpointPage{}, fmt.Errorf("%w: status must be ACTIVE, DELETED or ALL", ErrInvalid)
+	}
+
+	var cursorTime time.Time
+	var cursorID uuid.UUID
+	if filter.Cursor != "" {
+		decoded, err := base64.RawURLEncoding.DecodeString(filter.Cursor)
+		if err != nil {
+			return EndpointPage{}, fmt.Errorf("%w: invalid cursor", ErrInvalid)
+		}
+		parts := strings.Split(string(decoded), "|")
+		if len(parts) != 2 {
+			return EndpointPage{}, fmt.Errorf("%w: invalid cursor", ErrInvalid)
+		}
+		cursorTime, err = time.Parse(time.RFC3339Nano, parts[0])
+		if err != nil {
+			return EndpointPage{}, fmt.Errorf("%w: invalid cursor", ErrInvalid)
+		}
+		cursorID, err = uuid.Parse(parts[1])
+		if err != nil {
+			return EndpointPage{}, fmt.Errorf("%w: invalid cursor", ErrInvalid)
+		}
+	}
+
+	rows, err := r.db.Query(ctx, `
+		SELECT e.endpoint_id,e.tenant_id,e.name,e.url,e.secret_encrypted,e.status,
+		       e.connect_timeout_ms,e.request_timeout_ms,e.retry_policy_id,e.version,
+		       e.created_at,e.updated_at,e.deleted_at,
+		       COALESCE(array_agg(s.event_type ORDER BY s.event_type)
+		           FILTER (WHERE s.event_type IS NOT NULL), ARRAY[]::varchar[]) AS event_types
+		FROM endpoints e
+		LEFT JOIN endpoint_subscriptions s ON s.endpoint_id=e.endpoint_id
+		WHERE e.tenant_id=$1
+		  AND ($2='ALL' OR e.status=$2)
+		  AND ($3::timestamptz IS NULL OR (e.created_at,e.endpoint_id)<($3,$4))
+		GROUP BY e.endpoint_id
+		ORDER BY e.created_at DESC,e.endpoint_id DESC
+		LIMIT $5`, tenantID, status, nullableTime(cursorTime), nullableUUID(cursorID), limit+1)
+	if err != nil {
+		return EndpointPage{}, fmt.Errorf("list endpoints: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]Endpoint, 0, limit+1)
+	for rows.Next() {
+		var e Endpoint
+		if err := rows.Scan(&e.ID, &e.TenantID, &e.Name, &e.URL, &e.SecretEncrypted, &e.Status,
+			&e.ConnectTimeoutMS, &e.RequestTimeoutMS, &e.RetryPolicyID, &e.Version,
+			&e.CreatedAt, &e.UpdatedAt, &e.DeletedAt, &e.EventTypes); err != nil {
+			return EndpointPage{}, fmt.Errorf("scan endpoint: %w", err)
+		}
+		items = append(items, e)
+	}
+	if err := rows.Err(); err != nil {
+		return EndpointPage{}, err
+	}
+
+	page := EndpointPage{Items: items}
+	if len(items) > limit {
+		last := items[limit-1]
+		page.Items = items[:limit]
+		page.NextCursor = base64.RawURLEncoding.EncodeToString([]byte(last.CreatedAt.UTC().Format(time.RFC3339Nano) + "|" + last.ID.String()))
+	}
+	return page, nil
+}
+func nullableTime(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t
+}
+
+func nullableUUID(id uuid.UUID) any {
+	if id == uuid.Nil {
+		return nil
+	}
+	return id
 }

@@ -66,3 +66,13 @@ func (e Endpoint) PublicView() map[string]any {
 		"deleted_at":         e.DeletedAt,
 	}
 }
+
+type ListFilter struct {
+	Limit  int
+	Cursor string
+	Status string
+}
+type EndpointPage struct {
+	Items      []Endpoint
+	NextCursor string
+}

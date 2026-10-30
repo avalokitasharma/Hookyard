@@ -3,6 +3,7 @@ package httpapi
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/avalokitasharma/HookYard/endpoint-service/internal/endpoint"
@@ -152,4 +153,33 @@ func writeEndpointError(w http.ResponseWriter, err error) {
 		return
 	}
 	writeError(w, http.StatusInternalServerError, "internal server error")
+}
+
+func (h *EndpointHandler) List(w http.ResponseWriter, r *http.Request) {
+	tenant, err := tenantID(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "invalid tenant")
+		return
+	}
+	limit := 50
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || parsed < 1 || parsed > 100 {
+			writeError(w, http.StatusBadRequest, "limit must be between 1 and 100")
+			return
+		}
+		limit = parsed
+	}
+	page, err := h.service.List(r.Context(), tenant, endpoint.ListFilter{
+		Limit: limit, Cursor: r.URL.Query().Get("cursor"), Status: r.URL.Query().Get("status"),
+	})
+	if err != nil {
+		writeEndpointError(w, err)
+		return
+	}
+	items := make([]map[string]any, 0, len(page.Items))
+	for _, e := range page.Items {
+		items = append(items, e.PublicView())
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "next_cursor": page.NextCursor})
 }
