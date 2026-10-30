@@ -38,6 +38,7 @@ CREATE TABLE endpoints (
 CREATE UNIQUE INDEX idx_endpoints_active_name ON endpoints(tenant_id, lower(name)) WHERE deleted_at IS NULL;
 CREATE INDEX idx_endpoints_tenant_status ON endpoints(tenant_id, status, endpoint_id);
 CREATE INDEX idx_endpoints_updated ON endpoints(tenant_id, updated_at DESC);
+CREATE INDEX idx_endpoints_tenant_created_id ON endpoints(tenant_id, status, created_at DESC, endpoint_id DESC);
 
 CREATE TABLE endpoint_subscriptions (
     endpoint_id UUID NOT NULL REFERENCES endpoints(endpoint_id) ON DELETE CASCADE,
